@@ -1,0 +1,258 @@
+import numpy as np
+from nltk.corpus import stopwords
+from nltk.stem import SnowballStemmer
+from gensim.models import word2vec
+import random
+import heapq
+import struct
+import scipy
+import math
+
+import keras
+from keras.models import Sequential
+from keras.layers.core import Dense, Dropout, Activation
+from keras.layers.recurrent import LSTM
+from keras.optimizers import SGD
+from keras.utils import np_utils  
+
+n_train = 10000
+n_test = 1915
+lamda = 0.5
+
+def data_in(root):
+    x_path = root + '/msrvtt10k/FeatureData/resnext101/feature.bin'
+    f = open(x_path,'rb')
+    s = f.read(4*n_train*2048)
+    x = struct.unpack('20480000f',s)
+    x = np.array(x)
+    x = x.reshape(n_train,2048)
+    
+    x_id = root + '/msrvtt10k/FeatureData/resnext101/id.txt'
+    f = open(x_id,'r')
+    s = f.readlines()[0]
+    s = s.split(' ')
+    temp = []
+    for i in range(len(x)):
+        temp.append((int(s[i][5:]),x[i]))
+    temp.sort()
+    for i in range(len(x)):
+        x[i] = temp[i][1]
+    
+    tes_path = root + '/tv2016test/FeatureData/resnext101/feature.bin'
+    f = open(tes_path,'rb')
+    temp = n_test*2048
+    s = f.read(4*temp)
+    tes = struct.unpack('3921920f',s)
+    tes = np.array(tes)
+    tes = tes.reshape(n_test,2048)
+    
+    x_id = root + '/tv2016test/FeatureData/resnext101/id.txt'
+    f = open(x_id,'r')
+    s = f.readlines()[0]
+    s = s.split(' ')
+    temp = []
+    for i in range(len(tes)):
+        temp.append((int(s[i][16:]),tes[i]))
+    temp.sort()
+    for i in range(len(tes)):
+        tes[i] = temp[i][1]
+    
+    print('data in finished!')
+    
+    return x,tes
+
+def bow(root): #词袋
+    
+    x_path = root + '/msrvtt10k/TextData/msrvtt10k.caption.txt'
+    f = open(x_path,'r')
+    s = f.readlines()   
+    
+    sentence = []
+    for each in s:
+        text = each[:-2].split(' ')
+        text = text[1:]
+        sentence.append(text)
+    
+    w2v = word2vec.Word2Vec(sentence, size=100,min_count=1)
+    w2v.save('w2v.model')
+    
+    print('word2vec training finished!')
+
+    y = np.zeros((10000,500))
+    i = 0
+    while i<len(s):
+        text = s[i][:-2].split(' ')
+        
+        id = text[0]
+        id = int(id[5:].split('#')[0])
+        
+        text = text[1:]
+
+        for j in range(i+1,i+20):
+             text = text + s[j][:-1].split(' ')[1:]
+        text = list(set(text))
+        
+        text = [word for word in text if word not in stopwords.words("english")]
+        
+        text = list(set(text))
+        
+        temp = np.zeros((5,100))
+        j = 0
+        for each in text:
+            if each in w2v:
+                temp[j] = w2v[each]
+                j = j+1
+                if j == 5:
+                    break
+                    
+        temp = temp.reshape(500,)
+        y[id] = temp
+        
+        #print(text)
+        #print(id)
+        
+        i = i + 20
+    
+    print('bow finished!')
+    
+    return y,w2v
+
+
+def train(x,y): #训练Keras网络
+    x = np.array(x)
+    x = x.reshape(-1,100,5)
+    y = np.array(y)
+    
+    x_shape = x.shape
+    y_shape = y.shape
+    batch_size = 128  
+    nb_classes = 10  
+    epochs = 12  
+# number of convolutional filters to use  
+    nb_filters = 1024
+
+    model = Sequential()
+    model.add(LSTM(1000, return_sequences=True, input_shape=(100,5)))
+    model.add(Activation('relu'))
+    model.add(Dropout(0.5))
+    
+    model.add(LSTM(15000, return_sequences=False))
+    model.add(Activation('relu'))
+    model.add(Dropout(0.5))
+    
+    model.add(Dense(2000))
+    model.add(Activation('relu'))
+    model.add(Dropout(0.2))
+    
+    model.add(Dense(2048))
+    model.add(Activation('relu'))
+
+    model.compile(loss='categorical_crossentropy', optimizer=keras.optimizers.Adam(lr=0.05, beta_1=0.9, beta_2=0.999, epsilon=1e-08),metrics=['accuracy'])
+
+    model.fit(x, y, batch_size=128, epochs=5)
+    
+    #print(model.evaluate(x, y, batch_size=128))
+    
+    return model
+    
+def tes_text(path): #返回测试视频句子
+    #path = 'E:/S4/paper/try/tv2016test/TextData/tv2016test.setA.txt'
+    #path = 'E:/S4/paper/try/tv2016test/TextData/tv2016test.setB.txt'
+    f = open(path,'r')
+    s = f.readlines()
+    
+    for i in range(len(s)):
+        temp = s[i][:-1].split(' ')
+        s[i] = temp[1:]
+        
+    return s
+
+def text2vec(t): #将str t变为向量
+    
+    text = [word for word in t if word not in stopwords.words("english")]
+    temp = np.zeros((5,100))
+    j = 0
+    for each in text:
+        if each in w2v:
+            temp[j] = w2v[each]
+            j = j+1
+            if j == 5:
+                break
+    ye = temp.reshape(500,)
+
+    return ye #返回值为m*1
+
+def cos(vector1,vector2):  
+    dot_product = 0.0;  
+    normA = 0.0;  
+    normB = 0.0;  
+    for a,b in zip(vector1,vector2):  
+        dot_product += a*b  
+        normA += a**2  
+        normB += b**2  
+    if normA == 0.0 or normB==0.0:  
+        return None  
+    else:  
+        return dot_product / scipy.linalg.fractional_matrix_power(normA*normB, 0.5)
+    
+def cos2(vec1, vec2):
+    npvec1, npvec2 = np.array(vec1), np.array(vec2)
+    return npvec1.dot(npvec2)/(math.sqrt((npvec1**2).sum()) * math.sqrt((npvec2**2).sum()))
+
+def search(s,tes): #根据文本检索视频
+    xe = model.predict(text2vec(s).reshape(-1,100,5))
+    #xe = model.predict(text2vec(s).reshape(-1,300))
+    print(s)
+    print(text2vec(s).reshape(-1,100,5))
+    print(xe)
+    n_tes = tes.shape[0]
+    e,flag = 0,0
+    temp = []
+    for t in range(0,n_test):
+        xi = (tes[t]).reshape(-1,1)
+        dis = xe.dot(xi)/(math.sqrt((xe**2).sum()) * math.sqrt((xi**2).sum()))
+        temp.append((dis,t))
+        
+    temp.sort()
+    temp.reverse()
+            
+    return temp
+
+def predict_t(tes_s,tes): #将检索结果写入文件，tes_s顺序对应tes中的视频
+    i,count = 0,0
+    out = open('E:/S4/paper/try/result3.txt','w')
+    for each in tes_s:
+        q = str(i)
+        temp = search(each,tes)
+        for p in temp:
+            q = q+' '+str(p[1])
+        q = q+'\n'
+        out.write(q)
+        print('predict '+str(i)+' finished!')
+        i = i+1
+    out.close()  
+    print('result writing finished!')
+
+    
+x,tes = data_in('E:/S4/paper/try')
+y,w2v = bow('E:/S4/paper/try') #t_words中包含词袋中的所有词
+x_max = x.max()
+x_min = x.min()
+y_max = y.max()
+y_min = y.min()
+
+x = (x-x_min)/(x_max-x_min)
+y = (y-y_min)/(y_max-y_min)
+    
+#x(10000,1024)视频空间
+#y(10000,7337)词袋空间
+
+model = train(y,x) #将y映射到x
+model.save('F:/model/w2vv.h5')
+
+predict_t(tes_text('E:/S4/paper/try/tv2016test/TextData/tv2016test.setA.txt'),tes)
+
+#print(video2text(w,a,(x.T[10]).reshape(-1,1)))
+#print(search(w,a,'a girl in an army shirt sings an angry song about her lost lover',tes))
+
+#print(precise_rate(w,a,tes_text('E:/S4/paper/try/tv2016test/TextData/tv2016test.setA.txt'),tes))
